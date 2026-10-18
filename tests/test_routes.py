@@ -90,9 +90,7 @@ class TestAccountService(TestCase):
         """It should Create a new Account"""
         account = AccountFactory()
         response = self.client.post(
-            BASE_URL,
-            json=account.serialize(),
-            content_type="application/json"
+            BASE_URL, json=account.serialize(), content_type="application/json"
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
@@ -117,9 +115,7 @@ class TestAccountService(TestCase):
         """It should not Create an Account when sending the wrong media type"""
         account = AccountFactory()
         response = self.client.post(
-            BASE_URL,
-            json=account.serialize(),
-            content_type="test/html"
+            BASE_URL, json=account.serialize(), content_type="test/html"
         )
         self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
@@ -141,8 +137,10 @@ class TestAccountService(TestCase):
         response = self.client.get(BASE_URL)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.get_json()), 3)
-        self.assertEqual({item["id"] for item in response.get_json()},
-                         {account.id for account in accounts})
+        self.assertEqual(
+            {item["id"] for item in response.get_json()},
+            {account.id for account in accounts},
+        )
 
     def test_update_account(self):
         """It should persist updates without changing the identifier."""
@@ -164,7 +162,9 @@ class TestAccountService(TestCase):
         account = self._create_accounts(1)[0]
         url = f"{BASE_URL}/{account.id}"
         self.assertEqual(self.client.put(url, json={}).status_code, 400)
-        self.assertEqual(self.client.put(url, data="bad", content_type="text/plain").status_code, 415)
+        self.assertEqual(
+            self.client.put(url, data="bad", content_type="text/plain").status_code, 415
+        )
 
     def test_delete_account(self):
         """It should delete accounts and allow repeated deletion."""
@@ -177,3 +177,27 @@ class TestAccountService(TestCase):
         self.assertEqual(self.client.delete(url).status_code, 204)
         self.assertEqual(self.client.get(BASE_URL).get_json(), [])
 
+    def test_security_headers(self):
+        """It should include Talisman security headers."""
+        response = self.client.get("/health")
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(response.headers["X-Frame-Options"], "SAMEORIGIN")
+        self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
+
+    def test_cors(self):
+        """It should permit noncredentialed cross-origin API calls."""
+        response = self.client.get(BASE_URL, headers={"Origin": "https://example.org"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["Access-Control-Allow-Origin"], "https://example.org"
+        )
+        response = self.client.options(
+            BASE_URL,
+            headers={
+                "Origin": "https://example.org",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("POST", response.headers["Access-Control-Allow-Methods"])
