@@ -41,7 +41,7 @@ run_name=$(oc create -f "$project_dir/run.yaml" -o jsonpath='{.metadata.name}')
 printf 'PipelineRun: %s\n' "$run_name"
 tkn pipelinerun logs "$run_name" -f 2>&1 | tee "$evidence_dir/pipelinerun.txt"
 [ "$(oc get pipelinerun "$run_name" -o jsonpath='{.status.conditions[0].status}')" = True ] || { echo "Pipeline failed; send the output."; exit 1; }
-oc get deployment/accounts,pods,replicasets,service/accounts -o wide | tee "$evidence_dir/kube-deploy-accounts"
+{ oc get deployment/accounts service/accounts -o wide; oc get pods,replicasets -l app=accounts -o wide; } | tee "$evidence_dir/kube-deploy-accounts"
 route_host=$(oc get route accounts -o jsonpath='{.spec.host}')
 curl --fail --retry 8 --retry-delay 3 "https://$route_host/" | tee "$evidence_dir/kube-app-output"
 printf '\nApplication: https://%s\nEvidence directory: %s\n' "$route_host" "$evidence_dir"
