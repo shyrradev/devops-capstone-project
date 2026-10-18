@@ -1,12 +1,10 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: pipelinerun-pvc
+  name: accounts-source-pvc
 spec:
+  accessModes: [ReadWriteOnce]
   storageClassName: skills-network-learner
   resources:
     requests:
-      storage:  1Gi
-  volumeMode: Filesystem
-  accessModes:
-    - ReadWriteMany
+      storage: 1Gi

@@ -1,52 +1,66 @@
----
 apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
-  name: echo
+  name: accounts-cleanup
 spec:
-  description: This task will echo the message.
-  params:
-    - name: message
-      description: The message to echo
-      type: string
-  steps:
-    - name: echo-message
-      image: alpine:3
-      command: [/bin/echo]
-      args: ["$(params.message)"]
----
-apiVersion: tekton.dev/v1beta1
-kind: Task
-metadata:
-  name: cleanup
-spec:
-  description: This task will clean up a workspace by deleting all of the files.
+  description: Remove files from the shared source workspace before cloning.
   workspaces:
     - name: source
   steps:
     - name: remove
-      image: alpine:3
-      env:
-        - name: WORKSPACE_SOURCE_PATH
-          value: $(workspaces.source.path)
+      image: alpine:3.20
       workingDir: $(workspaces.source.path)
-      securityContext:
-        runAsNonRoot: false
-        runAsUser: 0
       script: |
         #!/usr/bin/env sh
         set -eu
-        echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
-        # Delete any existing contents of the directory if it exists.
-        #
-        # We don't just "rm -rf ${WORKSPACE_SOURCE_PATH}" because ${WORKSPACE_SOURCE_PATH} might be "/"
-        # or the root of a mounted volume.
-        if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
-          # Delete non-hidden files and directories
-          rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
-          # Delete files and directories starting with . but excluding ..
-          rm -rf "${WORKSPACE_SOURCE_PATH}"/.[!.]*
-          # Delete files and directories starting with .. plus any other character
-          rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
-        fi
-
+        echo "Cleaning the source workspace"
+        find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        echo "Source workspace is clean"
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: accounts-nose
+spec:
+  description: Install project dependencies and run nose unit tests with coverage.
+  workspaces:
+    - name: source
+  params:
+    - name: args
+      type: string
+      default: "-v --with-spec --spec-color --with-coverage --cover-package=service --cover-erase"
+  steps:
+    - name: nosetests
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: HOME
+          value: /tmp
+      script: |
+        #!/bin/sh
+        set -eu
+        export PATH="/tmp/.local/bin:$PATH"
+        python -m pip install --user --no-cache-dir -r requirements.txt
+        DATABASE_URI=sqlite:////tmp/accounts-tests.db nosetests $(params.args)
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: accounts-flake8
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: HOME
+          value: /tmp
+      script: |
+        #!/bin/sh
+        set -eu
+        export PATH="/tmp/.local/bin:$PATH"
+        python -m pip install --user --no-cache-dir flake8==4.0.1
+        flake8 service tests --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 service tests --count --max-complexity=10 --max-line-length=127 --statistics

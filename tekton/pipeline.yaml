@@ -1,38 +1,157 @@
-#
-# This pipeline needs the following tasks from Tekton Catalog
-#   - git-clone
-#   - flake8
-#
----
 apiVersion: tekton.dev/v1beta1
 kind: Pipeline
-metadata:  
-  name: cd-pipeline
+metadata:
+  name: accounts-cd
 spec:
   workspaces:
-    - name: pipeline-workspace
+    - name: shared-workspace
   params:
     - name: repo-url
-    - name: branch
+      type: string
+      default: https://github.com/shyrradev/devops-capstone-project.git
+    - name: revision
+      type: string
       default: main
+    - name: image-url
+      type: string
+    - name: app-name
+      type: string
+      default: accounts
   tasks:
-    - name: init
+    - name: cleanup
+      taskRef:
+        name: accounts-cleanup
       workspaces:
         - name: source
-          workspace: pipeline-workspace          
+          workspace: shared-workspace
+    - name: git-clone
+      runAfter: [cleanup]
       taskRef:
-        name: cleanup
-
-    - name: clone
-      workspaces:
-        - name: output
-          workspace: pipeline-workspace          
-      taskRef:
+        kind: ClusterTask
         name: git-clone
       params:
-      - name: url
-        value: $(params.repo-url)
-      - name: revision
-        value: $(params.branch)
-      runAfter:
-        - init
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+    - name: flake8
+      runAfter: [git-clone]
+      taskRef:
+        name: accounts-flake8
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: nose
+      runAfter: [flake8]
+      taskRef:
+        name: accounts-nose
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: buildah
+      runAfter: [nose]
+      taskRef:
+        kind: ClusterTask
+        name: buildah
+      params:
+        - name: IMAGE
+          value: $(params.image-url)
+        - name: TLSVERIFY
+          value: "true"
+        - name: BUILD_EXTRA_ARGS
+          value: --cert-dir=/var/run/secrets/kubernetes.io/serviceaccount
+        - name: PUSH_EXTRA_ARGS
+          value: --cert-dir=/var/run/secrets/kubernetes.io/serviceaccount
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: deploy
+      runAfter: [buildah]
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+      params:
+        - name: SCRIPT
+          value: |
+            set -eu
+            oc apply -f - <<'MANIFEST'
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: $(params.app-name)
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: $(params.app-name)
+              template:
+                metadata:
+                  labels:
+                    app: $(params.app-name)
+                  annotations:
+                    tekton.dev/pipelineRun: $(context.pipelineRun.name)
+                spec:
+                  containers:
+                    - name: accounts
+                      image: $(params.image-url)
+                      imagePullPolicy: Always
+                      env:
+                        - name: DATABASE_HOST
+                          value: accounts-db
+                        - name: DATABASE_NAME
+                          value: accounts
+                        - name: DATABASE_USER
+                          value: postgres
+                        - name: DATABASE_PASSWORD
+                          valueFrom:
+                            secretKeyRef:
+                              name: accounts-db
+                              key: password
+                      ports:
+                        - containerPort: 8080
+                      readinessProbe:
+                        httpGet:
+                          path: /health
+                          port: 8080
+                        initialDelaySeconds: 3
+                      resources:
+                        requests:
+                          cpu: 10m
+                          memory: 64Mi
+                        limits:
+                          cpu: 250m
+                          memory: 256Mi
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: $(params.app-name)
+            spec:
+              selector:
+                app: $(params.app-name)
+              ports:
+                - name: http
+                  port: 8080
+                  targetPort: 8080
+            ---
+            apiVersion: route.openshift.io/v1
+            kind: Route
+            metadata:
+              name: $(params.app-name)
+            spec:
+              to:
+                kind: Service
+                name: $(params.app-name)
+              port:
+                targetPort: http
+              tls:
+                termination: edge
+                insecureEdgeTerminationPolicy: Redirect
+            MANIFEST
+            oc rollout status deployment/$(params.app-name) --timeout=240s
+            oc get deployment,service,route -l app=$(params.app-name)
